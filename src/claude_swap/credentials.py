@@ -202,6 +202,14 @@ SHARED_CREDENTIAL_KEYS = frozenset({
     "mcpXaaIdp",
     "mcpXaaIdpConfig",
     "pluginSecrets",
+    # The Claude Design credential (`/design login`, scopes
+    # `user:design:read`/`write`). It is a SEPARATE OAuth grant, issued to
+    # whichever claude.ai account the browser authorized, and Claude Code
+    # refreshes it on its own clock -- it does not change identity when
+    # the login beside it is swapped. Left slot-owned, it rode along in
+    # whichever slot was active at `/design login` and vanished on the next
+    # switch, so every rotation cost a fresh browser login.
+    "designOauth",
 })
 
 # Account-scoped siblings cswap knows about, named so the unrecognized-key

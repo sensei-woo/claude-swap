@@ -9418,6 +9418,30 @@ class TestSharedOAuthCredentialPreservation:
             "mcpOAuth": {"server": {"refreshToken": "current"}},
         }
 
+    def test_design_credential_travels_with_the_machine(self, temp_home):
+        # `/design login` mints a separate grant (`user:design:*`) for the
+        # account the BROWSER authorized; it is not the login beside it and
+        # Claude Code refreshes it itself. Slot-owned, it vanished on the
+        # next switch and came back stale on the one after. Live wins.
+        switcher = ClaudeAccountSwitcher()
+        target = json.dumps({
+            "claudeAiOauth": {"accessToken": "target"},
+            "designOauth": {"accessToken": "stale", "refreshToken": "used"},
+        })
+        live = json.dumps({
+            "claudeAiOauth": {"accessToken": "live"},
+            "designOauth": {"accessToken": "fresh", "refreshToken": "r2"},
+        })
+
+        composed = json.loads(
+            switcher._prepare_credentials_for_activation(target, live)
+        )
+
+        assert composed == {
+            "claudeAiOauth": {"accessToken": "target"},
+            "designOauth": {"accessToken": "fresh", "refreshToken": "r2"},
+        }
+
     def test_shared_key_absent_from_live_is_not_resurrected(self, temp_home):
         # Shared keys are live-owned in absence too: if the machine no
         # longer holds an MCP session, the slot's stale copy must not
