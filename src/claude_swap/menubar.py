@@ -435,6 +435,7 @@ def format_account_label(
     fetched_at: float | None = None,
     login_expires_at: float | None = None,
     quarantined: bool = False,
+    warning: str | None = None,
 ) -> str:
     """Build one account row's menu label.
 
@@ -447,7 +448,8 @@ def format_account_label(
     marker = "  (disabled)" if disabled else ""
     row = f"{num}  {label}{marker}  {usage_summary(usage, now, fetched_at)}"
     note = oauth.format_login_expiry(login_expires_at, quarantined, now)
-    return f"{row} · {note}" if note else row
+    row = f"{row} · {note}" if note else row
+    return f"{row}  {warning}" if warning else row
 
 
 def _local_part(email: str, limit: int = 12) -> str:
@@ -1072,14 +1074,31 @@ def run(switcher) -> int:
                 _purge(self.menu._menu)
             self.menu.clear()
             account_items = []
+            # Setup-token expiry, from the roster (one small file read per
+            # rebuild). Never let it break the menu.
+            try:
+                from claude_swap.doctor import expiry_short
+
+                _roster = json.loads(
+                    (self.switcher.backup_dir / "sequence.json").read_text()
+                ).get("accounts") or {}
+            except Exception:  # noqa: BLE001
+                expiry_short, _roster = None, {}
             for (
                 num, email, is_active, display, _last_good, alias, disabled, fetched_at,
                 login_expires_at, quarantined,
             ) in self.snapshot["accounts"]:
+                _warn = None
+                if expiry_short is not None:
+                    try:
+                        _warn = expiry_short(str(num), _roster.get(str(num)))
+                    except Exception:  # noqa: BLE001
+                        _warn = None
                 item = rumps.MenuItem(
                     format_account_label(
                         num, email, display, alias=alias, disabled=disabled, fetched_at=fetched_at,
                         login_expires_at=login_expires_at, quarantined=quarantined,
+                        warning=_warn,
                     ),
                     callback=self._make_switch_to(num),
                 )
