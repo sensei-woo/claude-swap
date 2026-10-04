@@ -434,6 +434,13 @@ class TestBackendWritersHaveExactlyOneCaller:
 # `write_account_credentials`, which only forward into the store/private
 # method and carry no reasoning of their own).
 EXPECTED_WRITE_SITE_ROSTER: dict[tuple[str, str], int] = {
+    # Reviewed 2026-10-04 (sensei-woo fork, setup-token fallback): both pass
+    # attributed=True. `save` writes the slot's own setup token into its
+    # pseudo-slot `<n>-setup-token` (org checked before storage; a renewal
+    # replaces a different token by design). `activate` puts that same
+    # token into the slot whose login just died (invalid_grant).
+    ("fallback.py", "save"): 1,
+    ("fallback.py", "activate"): 1,
     ("switcher.py", "_swap_accounts_locked"): 2,
     ("switcher.py", "_rollback_swap"): 1,
     ("switcher.py", "_relocate_locked"): 1,
