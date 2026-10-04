@@ -130,6 +130,17 @@ def usage_to_json(usage: dict, fetched_at: float | None = None) -> dict:
         out["spend"] = spend_out
     if "scoped" in usage:
         out["scoped"] = [_scoped_window_to_json(w, fetched_at) for w in usage["scoped"]]
+    partial = usage.get("partial")
+    if isinstance(partial, dict):
+        # Built from inference rate-limit headers (setup-token slot): no
+        # per-model windows exist in this reading, which is not the same as
+        # the account having none. `tightest` is the binding limit's claim.
+        out["partial"] = {
+            "source": partial.get("source"),
+            "perModel": "not reported",
+            "tightest": partial.get("tightest"),
+            "status": partial.get("status"),
+        }
     return out
 
 
