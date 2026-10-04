@@ -39,7 +39,12 @@ def save(switcher, num: str, email: str, credentials: str,
     blob.pop("cswapSetupToken", None)
     if dates:
         blob["cswapSetupToken"] = dates
-    switcher._store._write_account_credentials(_key(num), email, json.dumps(blob))
+    # attributed=True: the pseudo-slot holds only this slot's own setup token
+    # (its org was checked before storage); a renewal legitimately replaces
+    # a different token, which the store's lineage guard would otherwise
+    # refuse.
+    switcher._store._write_account_credentials(
+        _key(num), email, json.dumps(blob), attributed=True)
 
 
 def read(switcher, num: str, email: str) -> "tuple[str, dict | None] | None":
@@ -78,7 +83,10 @@ def activate(switcher, num: str, email: str, active: bool) -> bool:
         return False
     creds, dates = got
     try:
-        switcher._write_account_credentials(num, email, creds)
+        # attributed=True: the slot's OWN fallback replacing its own dead
+        # login. Unattributed, the store's lineage guard refuses it (the
+        # setup token's fingerprint differs from the login it replaces).
+        switcher._write_account_credentials(num, email, creds, attributed=True)
         if active:
             live = switcher._read_credentials()
             switcher._write_credentials(
