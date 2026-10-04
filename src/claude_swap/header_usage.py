@@ -90,7 +90,7 @@ def usage_from_headers(headers: dict, now: float | None = None) -> dict | None:
     # refusing (`status`).
     usage["partial"] = {
         "source": "headers",
-        "tightest": headers.get("representative-claim"),
+        "binding": headers.get("representative-claim"),
         "status": headers.get("status"),
     }
     return usage
@@ -112,15 +112,17 @@ def claim_label(claim: str | None) -> str:
 def partial_note(usage: dict | None) -> str | None:
     """One line saying a header-built reading is partial, or None.
 
-    ``tightest 7d · per-model % not reported``, or ``AT LIMIT: Opus 7d · …``
-    when the binding limit is refusing requests.
+    ``binding: 7d · per-model % not reported``, or ``AT LIMIT: Opus 7d · …``
+    when the binding limit is refusing requests. "Binding" is Anthropic's
+    own ``representative-claim``, NOT the highest percentage shown: measured
+    2026-10-04 it named 5h at 2% while 7d stood at 37%.
     """
     info = usage.get("partial") if isinstance(usage, dict) else None
     if not isinstance(info, dict):
         return None
-    label = claim_label(info.get("tightest"))
+    label = claim_label(info.get("binding") or info.get("tightest"))
     lead = (f"AT LIMIT: {label}" if info.get("status") == "rejected"
-            else f"tightest {label}")
+            else f"binding: {label}")
     # Fable's bucket is the one per-model window the headers can carry.
     if isinstance(usage.get("scoped"), list) and usage["scoped"]:
         return lead
