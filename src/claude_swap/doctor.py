@@ -118,6 +118,38 @@ def _menubar_autoswitch(switcher) -> bool | None:
         return None
 
 
+def _design_grant_finding(switcher) -> "Finding | None":
+    """An action when the live credential carries no Claude Design grant.
+
+    The grant (``designOauth``) is a SEPARATE OAuth grant that `/design`
+    mints; Claude Design, Design Sync and the pin's design-route swap all
+    need it. It lives beside the login in the live credential, so a fresh
+    `claude auth login` can leave it out, and nothing reported that until a
+    Design call 401'd (2026-10-04). An unreadable live store is not a
+    finding — doctor cannot tell.
+    """
+    try:
+        raw = switcher._read_credentials()
+    except Exception:  # noqa: BLE001
+        return None
+    if not raw:
+        return None
+    try:
+        grant = (json.loads(raw).get("designOauth") or {})
+    except ValueError:
+        return None
+    if grant.get("accessToken") and grant.get("refreshToken"):
+        return None
+    return Finding(
+        "action",
+        "no Claude Design grant on this machine — Claude Design, Design Sync "
+        "and the pin's design swap all answer 401",
+        "in a terminal `claude` session run `/design` (older builds: "
+        "`/design-login`) and approve it as the account that owns your "
+        "Design projects",
+    )
+
+
 def run_checks(switcher, now: float | None = None) -> list[Finding]:
     from claude_swap import oauth
     from claude_swap.settings import load_settings
@@ -219,6 +251,10 @@ def run_checks(switcher, now: float | None = None) -> list[Finding]:
             "tick 'Auto-switch accounts' in the cswap menu"))
     if settings is not None and settings.failover_on_unknown_usage is False:
         pass  # deliberate here; not a finding
+
+    design = _design_grant_finding(switcher)
+    if design is not None:
+        findings.append(design)
 
     # The pin.
     try:
