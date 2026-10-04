@@ -80,6 +80,7 @@ class TestDoctor:
                          return_value=entries),
             patch.object(doctor, "_engine_running", return_value=engine),
             patch.object(doctor, "_menubar_autoswitch", return_value=autoswitch),
+            patch.object(doctor, "_design_grant_finding", return_value=None),
         ):
             return doctor.run_checks(h.switcher)
 
@@ -143,3 +144,29 @@ def test_menubar_row_carries_the_warning():
 
     row = format_account_label("2", "b@x", None, warning="⚠ setup token expires in 9d")
     assert row.endswith("⚠ setup token expires in 9d")
+
+
+class TestDesignGrant:
+    def _live(self, h, extra):
+        live = json.loads(h.switcher._read_credentials())
+        live.pop("designOauth", None)
+        live.update(extra)
+        h.switcher._write_credentials(json.dumps(live))
+
+    def test_missing_grant_is_an_action_with_the_fix(self, temp_home):
+        h = _harness(temp_home)
+        self._live(h, {})
+        f = doctor._design_grant_finding(h.switcher)
+        assert f.level == "action" and "no Claude Design grant" in f.what
+        assert "/design" in f.fix
+
+    def test_present_grant_is_quiet(self, temp_home):
+        h = _harness(temp_home)
+        self._live(h, {"designOauth": {"accessToken": "d", "refreshToken": "r",
+                                       "expiresAt": 1}})
+        assert doctor._design_grant_finding(h.switcher) is None
+
+    def test_unreadable_live_store_is_not_a_finding(self, temp_home):
+        h = _harness(temp_home)
+        with patch.object(h.switcher, "_read_credentials", side_effect=OSError):
+            assert doctor._design_grant_finding(h.switcher) is None
