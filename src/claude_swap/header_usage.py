@@ -110,7 +110,46 @@ def usage_from_headers(headers: dict, now: float | None = None) -> dict | None:
         data[window] = entry
     if not data:
         return None
-    return build_usage_result(data)
+    result = build_usage_result(data)
+    if result is not None:
+        # SAY WHAT IS MISSING. Headers carry no per-model percentages, so a
+        # row built from them must not look complete next to one from the
+        # usage endpoint. What they DO name is the limit currently binding
+        # (`representative-claim`) and whether it is refusing (`status`).
+        result["partial"] = {
+            "source": "headers",
+            "tightest": headers.get("representative-claim"),
+            "status": headers.get("status"),
+        }
+    return result
+
+
+def claim_label(claim: str | None) -> str:
+    """``seven_day_opus`` -> ``Opus 7d``; ``five_hour`` -> ``5h``."""
+    if not claim:
+        return "unknown"
+    if claim == "five_hour":
+        return "5h"
+    if claim == "seven_day":
+        return "7d"
+    if claim.startswith("seven_day_"):
+        return f"{claim[len('seven_day_'):].replace('_', ' ').title()} 7d"
+    return claim
+
+
+def partial_note(usage: dict | None) -> str | None:
+    """One line saying a header-built reading is partial, or None.
+
+    ``tightest 7d · per-model % not reported``, or ``AT LIMIT: Opus 7d · …``
+    when the binding limit is refusing requests.
+    """
+    info = usage.get("partial") if isinstance(usage, dict) else None
+    if not isinstance(info, dict):
+        return None
+    label = claim_label(info.get("tightest"))
+    lead = (f"AT LIMIT: {label}" if info.get("status") == "rejected"
+            else f"tightest {label}")
+    return f"{lead} · per-model % not reported"
 
 
 def passive_reading(access_token: str | None) -> dict | None:
