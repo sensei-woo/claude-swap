@@ -163,3 +163,43 @@ class TestUnreadableIsNotExhausted:
         switch = next(e for e in h.events if isinstance(e, SwitchEvent))
         assert switch.trigger == "at-limit"
         assert h.active_number() == 2
+
+
+class TestPartialLabel:
+    """A header-built reading must say it is partial and name the binding limit."""
+
+    def _usage(self, claim="seven_day", status="allowed"):
+        return header_usage.usage_from_headers({
+            "5h-utilization": "0.0", "7d-utilization": "0.36",
+            "representative-claim": claim, "status": status,
+        })
+
+    def test_claim_labels(self):
+        assert header_usage.claim_label("seven_day") == "7d"
+        assert header_usage.claim_label("five_hour") == "5h"
+        assert header_usage.claim_label("seven_day_opus") == "Opus 7d"
+        assert header_usage.claim_label(None) == "unknown"
+
+    def test_menubar_row_says_partial(self):
+        from claude_swap.menubar import usage_summary
+
+        row = usage_summary(self._usage())
+        assert row.endswith("tightest 7d · per-model % not reported")
+        assert "7d 36%" in row
+        # A full reading (usage endpoint) carries no such note.
+        assert "not reported" not in usage_summary(_usage(10))
+
+    def test_at_limit_is_loud(self):
+        note = header_usage.partial_note(self._usage("seven_day_opus", "rejected"))
+        assert note == "AT LIMIT: Opus 7d · per-model % not reported"
+
+    def test_cli_and_json_carry_it(self):
+        from claude_swap.json_output import usage_to_json
+        from claude_swap.switcher import _format_usage_lines
+
+        u = self._usage()
+        assert any(l.startswith("note:") and "not reported" in l
+                   for l in _format_usage_lines(u))
+        j = usage_to_json(u)["partial"]
+        assert j == {"source": "headers", "perModel": "not reported",
+                     "tightest": "seven_day", "status": "allowed"}

@@ -156,6 +156,11 @@ def _format_usage_lines(usage: dict, fetched_at: float | None = None) -> list[st
             rows.append((w["name"], f"{w['pct']:>3.0f}%   resets {clock:<12}  in {countdown}{marker}"))
         else:
             rows.append((w["name"], f"{w['pct']:>3.0f}%{marker}"))
+    from claude_swap.header_usage import partial_note
+
+    note = partial_note(usage)
+    if note and rows:
+        rows.append(("note", note))
     width = max((len(label) for label, _ in rows), default=0) + 1  # label + ':'
     return [f"{label + ':':<{width}} {body}" for label, body in rows]
 

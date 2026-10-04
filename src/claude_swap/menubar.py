@@ -270,6 +270,13 @@ def usage_summary(
     spend = usage.get("spend")
     if isinstance(spend, dict) and isinstance(spend.get("pct"), (int, float)):
         parts.append(f"$ {spend['pct']:.0f}%")
+    # A reading built from rate-limit headers (a setup-token slot) is partial:
+    # say so, and name the limit that binds, so it never reads as complete.
+    from claude_swap.header_usage import partial_note
+
+    note = partial_note(usage)
+    if note and parts:
+        parts.append(note)
     return " · ".join(parts) if parts else "usage unavailable"
 
 
