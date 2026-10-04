@@ -141,6 +141,15 @@ def run_checks(switcher, now: float | None = None) -> list[Finding]:
         exp = expiry_finding(num, rec, now)
         if exp is not None:
             findings.append(Finding(exp.level, f"{who}: {exp.what}", exp.fix, num))
+        if rec.get("credentialMode") == "setup-token-fallback":
+            findings.append(Finding(
+                "note",
+                f"{who}: its full login died; running on its setup token "
+                "(inference fine, per-model usage not reported)",
+                f"optional: `cswap switch {num}`, `claude auth login --claudeai "
+                f"--email {email}`, `cswap add --slot {num}`",
+                num,
+            ))
         entry = entries.get(num)
         if entry is None:
             continue
