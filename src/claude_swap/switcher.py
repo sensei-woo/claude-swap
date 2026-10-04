@@ -198,6 +198,11 @@ def _usage_rows(usage: dict, fetched_at: float | None = None) -> list[tuple[str,
         cell = oauth.fresh_reset_strings(rejected)
         body = f"rejected   until {cell[1]:<12}  in {cell[0]}" if cell else "rejected"
         rows.append(("probe", body))
+    from claude_swap.header_usage import partial_note
+
+    note = partial_note(usage)
+    if note and rows:
+        rows.append(("note", note))
     return rows
 
 
