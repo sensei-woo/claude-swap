@@ -4169,6 +4169,9 @@ class ClaudeAccountSwitcher:
             if not spliced:
                 self._reject_identity_drift_since_verify(identity)
 
+            from claude_swap import fallback
+
+            fallback.preserve_before_oauth_add(self, account_num, current_email)
             self._write_account_credentials(account_num, current_email, current_creds)
             # UN-SPLICE IT, like the archive in `_perform_switch`. This
             # is the same kind of write — a live config kept as a slot's
@@ -4185,6 +4188,10 @@ class ClaudeAccountSwitcher:
 
             if alias is not None:
                 seq["accounts"][account_num]["alias"] = alias
+            # A fresh full login ends a setup-token fallback period.
+            from claude_swap.fallback import MODE_KEY
+
+            seq["accounts"][account_num].pop(MODE_KEY, None)
 
             seq["activeAccountNumber"] = int(account_num)
             seq["lastUpdated"] = get_timestamp()
@@ -4308,6 +4315,12 @@ class ClaudeAccountSwitcher:
         # Now safe to perform destructive cleanup (new account data is in memory)
         if displace_slot:
             d_num, d_email, d_org = displace_slot
+            # A full login replacing the SAME address's setup token keeps
+            # that token as its fallback (see `fallback`).
+            if d_email == current_email:
+                from claude_swap import fallback
+
+                fallback.preserve_before_oauth_add(self, d_num, d_email)
             self._delete_account_files(d_num, d_email)
             data = self._get_sequence_data()
             if int(d_num) in data["sequence"]:
@@ -4355,6 +4368,13 @@ class ClaudeAccountSwitcher:
         carried_alias = alias if alias is not None else existing_alias
         if carried_alias:
             data["accounts"][account_num]["alias"] = carried_alias
+        # The slot's setup-token fallback (if any) keeps its expiry dates on
+        # the roster, so the 30-day warning still fires for it.
+        from claude_swap import fallback
+
+        _fb = fallback.read(self, account_num, current_email)
+        if _fb is not None and _fb[1]:
+            data["accounts"][account_num]["setupToken"] = _fb[1]
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
             data["sequence"].sort()
@@ -5773,12 +5793,23 @@ class ClaudeAccountSwitcher:
             # dead threshold. The pre-fetch quarantine scan above couldn't see it,
             # so surface "re-login needed" in *this* pass instead of leaving the
             # slot looking merely refresh-failed until the next refresh notices.
+            fell_back = False
             for num in accepted:
                 _i = info_by_num[num]
                 if self._entry_token_dead(
                     entries[num], num, _i[1], _i[5], _i[4]
                 ):
+                    # A DEAD LOGIN WITH A SETUP TOKEN BEHIND IT keeps working:
+                    # swap the setup token in (live too, if active) instead of
+                    # stopping at "re-login needed". See `fallback`.
+                    from claude_swap import fallback
+
+                    if fallback.activate(self, num, _i[1], bool(_i[4])):
+                        fell_back = True
+                        continue
                     sentinels[num] = USAGE_RELOGIN_REQUIRED
+            if fell_back:
+                entries = store.entries(identities, models)
 
         return {
             num: with_sentinel(entries[num], sentinels.get(num))
@@ -6269,6 +6300,11 @@ class ClaudeAccountSwitcher:
             from claude_swap import doctor
 
             record = (seq_data.get("accounts") or {}).get(str(num)) or {}
+            from claude_swap import fallback as _fallback
+
+            if record.get(_fallback.MODE_KEY) == _fallback.MODE_FALLBACK:
+                print(f"     {bold_accent('⚠ full login died — running on its setup token')}")
+                print(f"       {muted('→ inference is fine; re-login only to get per-model usage back')}")
             expiring = doctor.expiry_finding(str(num), record)
             if expiring is not None:
                 print(f"     {bold_accent('⚠ ' + expiring.what)}")
