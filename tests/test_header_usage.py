@@ -184,7 +184,7 @@ class TestPartialLabel:
         from claude_swap.menubar import usage_summary
 
         row = usage_summary(self._usage())
-        assert row.endswith("tightest 7d · per-model % not reported")
+        assert row.endswith("binding: 7d · per-model % not reported")
         assert "7d 36%" in row
         # A full reading (usage endpoint) carries no such note.
         assert "not reported" not in usage_summary(_usage(10))
@@ -202,4 +202,4 @@ class TestPartialLabel:
                    for l in _format_usage_lines(u))
         j = usage_to_json(u)["partial"]
         assert j == {"source": "headers", "perModel": "not reported",
-                     "tightest": "seven_day", "status": "allowed"}
+                     "binding": "seven_day", "status": "allowed"}
