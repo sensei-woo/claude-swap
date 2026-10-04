@@ -1343,7 +1343,9 @@ def try_fetch_usage_for_account(
     ``header_probe`` its usage comes from :func:`request_usage_via_probe`
     instead, in place of the endpoint request, so the caller's poll plan and
     backoff pace it exactly like an endpoint fetch; without it the outcome is
-    the ``"setup-token"`` error and no request is sent. ``scoped_probe`` and
+    the pin proxy's passive reading of that token's own inference replies
+    (:mod:`claude_swap.header_usage`, no request) when it has a recent one,
+    else the ``"setup-token"`` error and no request is sent. ``scoped_probe`` and
     ``last_usage`` (the account's stored reading) only shape that probe, see
     :func:`_usage_from_probe`.
     """
@@ -1358,6 +1360,15 @@ def try_fetch_usage_for_account(
             return _usage_from_probe(
                 access_token, context, scoped_probe, last_usage
             )
+        # Passive only: the pin proxy's ledger of this token's own inference
+        # replies. No request is made, so nothing here spends quota.
+        from claude_swap import header_usage
+
+        passive = header_usage.passive_usage(
+            access_token, header_usage.PASSIVE_MAX_AGE_S
+        )
+        if passive is not None:
+            return UsageOutcome(passive)
         return UsageOutcome(None, error="setup-token")
 
     working_credentials = credentials

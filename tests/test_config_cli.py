@@ -48,6 +48,7 @@ class TestConfigList:
             "autoswitch.strategy",
             "autoswitch.includeApiKeyAccounts",
             "autoswitch.unhealthyTicks",
+            "autoswitch.failoverOnUnknownUsage",
             "autoswitch.model",
             "ui.theme",
             "ui.orgTag",
