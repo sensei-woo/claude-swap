@@ -56,9 +56,12 @@ def setup_token_expiry(record: dict | None) -> float | None:
         return None
 
 
-def _renew_fix(num: str, email: str) -> str:
-    return (f"run `claude setup-token` and approve it as {email}, then "
-            f"`cswap add-token --slot {num} --email {email}`")
+def _renew_fix(num: str, email: str, fallback_only: bool = False) -> str:
+    # A slot whose primary is a full login keeps the setup token as its
+    # FALLBACK; replacing the slot would throw the login away.
+    tail = (f"`cswap add-token - --fallback --slot {num}`" if fallback_only
+            else f"`cswap add-token --slot {num} --email {email}`")
+    return f"run `claude setup-token` and approve it as {email}, then {tail}"
 
 
 def expiry_finding(num: str, record: dict, now: float | None = None):
@@ -76,7 +79,10 @@ def expiry_finding(num: str, record: dict, now: float | None = None):
         what = f"setup token expires in {int(days)}d ({date})"
     else:
         return None
-    return Finding("action", what, _renew_fix(num, email), num)
+    # add-token blanks the org; a full login records the real one.
+    oauth_primary = bool(record.get("organizationUuid")) and record.get(
+        "credentialMode") != "setup-token-fallback"
+    return Finding("action", what, _renew_fix(num, email, oauth_primary), num)
 
 
 def expiry_short(num: str, record: dict | None, now: float | None = None):
