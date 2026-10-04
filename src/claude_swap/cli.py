@@ -1333,6 +1333,14 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
         help="Specify slot number when adding account (use with 'add' or 'add-token')",
     )
     parser.add_argument(
+        "--fallback",
+        action="store_true",
+        help=(
+            "With 'add-token': keep the slot's full login and store the token "
+            "as its setup-token fallback (renewing it), instead of replacing it"
+        ),
+    )
+    parser.add_argument(
         "--email",
         metavar="EMAIL",
         help=(
@@ -1582,6 +1590,10 @@ The original flag spellings (%(prog)s --switch, %(prog)s --list, ...) keep worki
 
         if args.add_account:
             switcher.add_account(slot=args.slot, alias=args.alias)
+        elif args.add_token is not None and args.fallback:
+            from claude_swap import fallback
+
+            fallback.add_from_token(switcher, args.add_token, args.slot)
         elif args.add_token is not None:
             switcher.add_account_from_token(
                 token=args.add_token,
