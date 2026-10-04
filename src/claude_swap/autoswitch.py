@@ -44,7 +44,11 @@ from typing import ClassVar
 
 from claude_swap import oauth, poll_policy
 from claude_swap.exceptions import ClaudeSwitchError
-from claude_swap.json_output import SCHEMA_VERSION, USAGE_TOKEN_EXPIRED
+from claude_swap.json_output import (
+    SCHEMA_VERSION,
+    USAGE_KEYCHAIN_UNAVAILABLE,
+    USAGE_TOKEN_EXPIRED,
+)
 from claude_swap.locking import FileLock
 from claude_swap.poll_policy import (
     ESCALATION_MARGIN_PCT,
@@ -1123,6 +1127,18 @@ class AutoSwitchEngine:
             return TickOutcome.NO_ACTION
 
         active_headroom = headroom.get(current)
+        if active_headroom is None and usage.get(current) is None:
+            # THE ENDPOINT IS BLIND, NOT THE ACCOUNT. The pin proxy files the
+            # rate-limit headers of every inference reply this account served
+            # (see `header_usage`); a recent one is the same measurement.
+            fallback = self._header_usage_for_active()
+            if fallback is not None:
+                usage = {**usage, current: fallback}
+                headroom = {
+                    **headroom,
+                    current: oauth.account_headroom(fallback, self._models),
+                }
+                active_headroom = headroom[current]
         if active_headroom is not None:
             self._unhealthy_ticks = 0
             self._idle_hold_since = None
@@ -1182,6 +1198,24 @@ class AutoSwitchEngine:
                 )
             else:
                 self._idle_hold_since = None
+            if not settings.failover_on_unknown_usage and usage.get(current) in (
+                None, USAGE_KEYCHAIN_UNAVAILABLE,
+            ):
+                # UNREADABLE IS NOT EXHAUSTED. A usage read that fails (the
+                # endpoint's own 429 budget, the network, a scope the token
+                # lacks) says nothing about whether the account still serves
+                # inference — failing over on it abandoned a 9%-used account
+                # for a 95% one (2026-09-20). A real limit still moves it: the
+                # pin proxy's header ledger reports it (above), and a broken
+                # credential arrives as a sentinel, which falls through.
+                self._unhealthy_ticks = 0
+                self._emit(
+                    NoSwitchEvent(
+                        reason="active-usage-unknown",
+                        detail="holding: unreadable usage is not a limit",
+                    )
+                )
+                return TickOutcome.NO_ACTION
             self._unhealthy_ticks += 1
             if self._unhealthy_ticks < settings.unhealthy_ticks:
                 self._emit(
@@ -2408,6 +2442,26 @@ class AutoSwitchEngine:
         if earliest is None:
             return None
         return datetime.fromtimestamp(earliest, tz=timezone.utc)
+
+    def _header_usage_for_active(self) -> dict | None:
+        """The active account's usage from the pin proxy's header ledger.
+
+        Keyed by the LIVE access token — the bearer every client on this
+        machine is actually sending. None on any failure: this is a fallback
+        and must never be the thing that breaks a tick.
+        """
+        try:
+            from claude_swap import header_usage
+
+            token = oauth.extract_access_token(
+                self.switcher._read_credentials() or ""
+            )
+            return header_usage.passive_usage(
+                token, header_usage.FALLBACK_MAX_AGE_S
+            )
+        except Exception:  # noqa: BLE001
+            _logger.debug("header-usage fallback failed", exc_info=True)
+            return None
 
     def _emit(self, event: AutoSwitchEvent) -> None:
         self.on_event(event)

@@ -50,6 +50,11 @@ class AutoSwitchSettings:
     strategy: str = "best"  # "best" (most headroom) or "consume-first" (soonest weekly reset)
     include_api_key_accounts: bool = False
     unhealthy_ticks: int = 3
+    # Whether an active account whose usage cannot be READ (endpoint 429,
+    # network, a scope it lacks) counts toward ``unhealthy_ticks`` failover.
+    # Off: only a real limit or a broken credential moves it — unreadable
+    # usage is not evidence the account cannot serve inference.
+    failover_on_unknown_usage: bool = True
     # Comma-separated model display name(s) (e.g. "Fable" or "Fable,Opus"),
     # or "all" for every scoped window an account reports. Each named model's
     # per-model weekly limit is folded into the binding window, so the engine
@@ -130,6 +135,11 @@ SETTING_SPECS: dict[str, SettingSpec] = {
         SettingSpec(
             "autoswitch", "unhealthyTicks", "unhealthy_ticks", "int", 1, 100,
             help="Consecutive failed polls before an account is unhealthy",
+        ),
+        SettingSpec(
+            "autoswitch", "failoverOnUnknownUsage", "failover_on_unknown_usage",
+            "bool",
+            help="Fail over when the active account's usage is unreadable",
         ),
         SettingSpec(
             "autoswitch", "model", "model", "string",

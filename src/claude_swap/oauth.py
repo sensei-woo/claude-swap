@@ -741,6 +741,15 @@ def try_fetch_usage_for_account(
         # A transient refresh failure falls through to try the (expired) token;
         # the 401 path below retries the refresh.
 
+    # AN INFERENCE-ONLY CREDENTIAL (a setup token) can never read the usage
+    # endpoint — it lacks `user:profile`, so every poll would 403 and the
+    # account would read as unknown forever. Read the rate-limit headers off
+    # its inference replies instead: the pin proxy's ledger, else a probe.
+    from claude_swap import header_usage
+
+    if header_usage.is_inference_only(oauth):
+        return header_usage.fetch_inference_only(access_token, context)
+
     try:
         data = request_usage_data(access_token)
         return UsageOutcome(build_usage_result(data))
