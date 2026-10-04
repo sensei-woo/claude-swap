@@ -123,3 +123,42 @@ def preserve_before_oauth_add(switcher, num: str, email: str) -> bool:
     _logger.info("Account %s: kept its setup token as the fallback for the "
                  "new full login", num)
     return True
+
+
+def add_from_token(switcher, token: str, slot) -> None:
+    """`cswap add-token --fallback --slot N`: (re)store slot N's setup token.
+
+    The slot's full login is untouched; only its fallback and the roster's
+    expiry dates change. ``token`` is the raw token, ``-`` for one stdin
+    line, or empty to prompt without echo.
+    """
+    import getpass
+    import sys
+
+    from claude_swap.doctor import setup_token_record
+    from claude_swap.exceptions import ValidationError
+
+    if slot is None:
+        raise ValidationError("--fallback needs --slot N")
+    if token == "-":
+        token = sys.stdin.readline().rstrip("\n")
+    elif not token:
+        token = getpass.getpass("Token: ")
+    token = token.strip()
+    if not token.startswith("sk-ant-oat"):
+        raise ValidationError("--fallback takes a `claude setup-token` token (sk-ant-oat…)")
+    num = str(slot)
+    data = switcher._get_sequence_data()
+    rec = (data.get("accounts") or {}).get(num)
+    if rec is None:
+        raise ValidationError(f"No account in slot {num}")
+    email = rec.get("email", "")
+    dates = setup_token_record()
+    creds = json.dumps({"claudeAiOauth": {"accessToken": token,
+                                          "scopes": ["user:inference"]}})
+    save(switcher, num, email, creds, dates)
+    rec["setupToken"] = dates
+    switcher._write_json(switcher.sequence_file, data)
+    _logger.info("Account %s: stored a new setup-token fallback", num)
+    print(f"Stored setup-token fallback for account {num} ({email}); "
+          f"expires {dates['expiresAt'][:10]}.")

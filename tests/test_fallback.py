@@ -85,3 +85,22 @@ def test_activate_without_fallback_changes_nothing(temp_home):
     before = h.switcher._read_account_credentials("2", "b@example.com")
     assert not fallback.activate(h.switcher, "2", "b@example.com", active=False)
     assert h.switcher._read_account_credentials("2", "b@example.com") == before
+
+
+def test_add_token_fallback_keeps_the_full_login(temp_home, capsys):
+    h = _harness(temp_home)
+    before = h.switcher._read_account_credentials("2", "b@example.com")
+    fallback.add_from_token(h.switcher, "sk-ant-oat01-NEW", 2)
+    assert h.switcher._read_account_credentials("2", "b@example.com") == before
+    creds, dates = fallback.read(h.switcher, "2", "b@example.com")
+    assert oauth.extract_access_token(creds) == "sk-ant-oat01-NEW"
+    rec = h.switcher._get_sequence_data()["accounts"]["2"]
+    assert rec["setupToken"] == dates
+
+
+def test_renew_advice_protects_a_full_login():
+    exp = {"addedAt": "2026-01-01T00:00:00+00:00", "expiresAt": "2026-01-02T00:00:00+00:00"}
+    oauth_slot = {"email": "b@x", "organizationUuid": "org", "setupToken": exp}
+    token_slot = {"email": "b@x", "organizationUuid": "", "setupToken": exp}
+    assert "--fallback --slot 2" in doctor.expiry_finding("2", oauth_slot).fix
+    assert "--fallback" not in doctor.expiry_finding("2", token_slot).fix
