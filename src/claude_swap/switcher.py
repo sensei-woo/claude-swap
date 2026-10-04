@@ -4468,6 +4468,10 @@ class ClaudeAccountSwitcher:
             self._usage_store.clear_dead_token(
                 [account_num], {account_num: (email, "")}
             )
+            if not is_api_key:
+                from claude_swap.doctor import setup_token_record
+
+                seq["accounts"][account_num]["setupToken"] = setup_token_record()
             seq["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, seq)
             kind_label = "API key" if is_api_key else "token"
@@ -4568,6 +4572,12 @@ class ClaudeAccountSwitcher:
         }
         if is_api_key:
             record["kind"] = "api_key"
+        if not is_api_key:
+            # The token's one-year life starts now (as near as cswap can
+            # know); `cswap doctor`, `list` and the menu bar warn from this.
+            from claude_swap.doctor import setup_token_record
+
+            record["setupToken"] = setup_token_record()
         data["accounts"][account_num] = record
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
@@ -6252,10 +6262,26 @@ class ClaudeAccountSwitcher:
             print(f"  {num}: {label} {muted(f'[{tag}]')}{markers}")
             for line in _usage_entry_lines(entries[str(num)]):
                 print(f"     {line}")
+            # A setup token lives one year and nothing else can tell; say it
+            # here, a month ahead, with the exact commands that renew it.
+            from datetime import datetime
+
+            from claude_swap import doctor
+
+            record = (seq_data.get("accounts") or {}).get(str(num)) or {}
+            expiring = doctor.expiry_finding(str(num), record)
+            if expiring is not None:
+                print(f"     {bold_accent('⚠ ' + expiring.what)}")
+                print(f"       {muted('→ ' + (expiring.fix or ''))}")
 
             if show_token_status:
                 for line in self._token_status_lines(accounts_info[i]):
                     print(f"     {dimmed('•')} {muted(line)}")
+                ts = doctor.setup_token_expiry(record)
+                if ts is not None:
+                    days = int((ts - time.time()) // 86400)
+                    when = datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+                    print(f"     {dimmed('•')} {muted(f'setup token: expires {when} (in {days}d)')}")
             if i < len(accounts_info) - 1:
                 print()
 

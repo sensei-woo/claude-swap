@@ -288,11 +288,13 @@ def format_account_label(
     alias: str | None = None,
     disabled: bool = False,
     fetched_at: float | None = None,
+    warning: str | None = None,
 ) -> str:
     """Build one account row's menu label."""
     label = f"{alias}  ({email})" if alias else email
     marker = "  (disabled)" if disabled else ""
-    return f"{num}  {label}{marker}  {usage_summary(usage, now, fetched_at)}"
+    tail = f"  {warning}" if warning else ""
+    return f"{num}  {label}{marker}  {usage_summary(usage, now, fetched_at)}{tail}"
 
 
 def _local_part(email: str, limit: int = 12) -> str:
@@ -686,10 +688,27 @@ def run(switcher) -> int:
                 _purge(self.menu._menu)
             self.menu.clear()
             account_items = []
+            # Setup-token expiry, from the roster (one small file read per
+            # rebuild). Never let it break the menu.
+            try:
+                from claude_swap.doctor import expiry_short
+
+                _roster = json.loads(
+                    (self.switcher.backup_dir / "sequence.json").read_text()
+                ).get("accounts") or {}
+            except Exception:  # noqa: BLE001
+                expiry_short, _roster = None, {}
             for num, email, is_active, display, _last_good, alias, disabled, fetched_at in self.snapshot["accounts"]:
+                _warn = None
+                if expiry_short is not None:
+                    try:
+                        _warn = expiry_short(str(num), _roster.get(str(num)))
+                    except Exception:  # noqa: BLE001
+                        _warn = None
                 item = rumps.MenuItem(
                     format_account_label(
-                        num, email, display, alias=alias, disabled=disabled, fetched_at=fetched_at
+                        num, email, display, alias=alias, disabled=disabled,
+                        fetched_at=fetched_at, warning=_warn,
                     ),
                     callback=self._make_switch_to(num),
                 )

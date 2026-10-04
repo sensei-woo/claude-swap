@@ -1195,6 +1195,11 @@ def main() -> None:
     if argv and argv[0] == "unmap":
         _unmap_command(argv[1:])
         return
+    if argv and argv[0] == "doctor":
+        from claude_swap.doctor import doctor_command
+
+        doctor_command(argv[1:])
+        return  # only reachable in tests where sys.exit is mocked
     if argv and argv[0] == "unclaimed":
         _unclaimed_command(argv[1:])
         return
@@ -1247,6 +1252,7 @@ Commands:
   %(prog)s move <a> <slot>            assign an account to a slot (swaps if taken)
   %(prog)s auto                       auto-switch when nearing rate limits
   %(prog)s config [set KEY VALUE]     show or change settings (settings.json)
+  %(prog)s doctor [--json]            only what needs doing (dead or expiring tokens, limits, pin)
   %(prog)s unclaimed [--purge ID]     list or drop stashed credential entries
   %(prog)s export <path>              export accounts
   %(prog)s import <path>              import accounts
