@@ -72,7 +72,8 @@ def test_preserve_copies_only_a_setup_token(temp_home):
     h = _harness(temp_home)
     # Slot 2 holds a full login: nothing to preserve.
     assert not fallback.preserve_before_oauth_add(h.switcher, "2", "b@example.com")
-    h.switcher._write_account_credentials("2", "b@example.com", _SETUP)
+    h.switcher._write_account_credentials("2", "b@example.com", _SETUP,
+                                          attributed=True)
     data = h.switcher._get_sequence_data()
     data["accounts"]["2"]["setupToken"] = _DATES
     h.switcher._write_json(h.switcher.sequence_file, data)
