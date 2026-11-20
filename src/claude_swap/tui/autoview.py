@@ -24,18 +24,20 @@ from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Footer, RichLog, Static
 
+from claude_swap import oauth
 from claude_swap.autoswitch import (
     AutoSwitchEngine,
     AutoSwitchEvent,
-    binding_pct,
     pct_label,
 )
-from claude_swap.models import AccountsSnapshot
+from claude_swap import pin
+from claude_swap.lines import binding_window
+from claude_swap.models import AccountSnapshot, AccountsSnapshot
 from claude_swap.settings import SETTING_SPECS, load_settings, parse_model_names
 from claude_swap.tui import data
 from claude_swap.tui.modals import ConfirmModal
 from claude_swap.tui.theme import Palette
-from claude_swap.tui.widgets import AccountsPanel
+from claude_swap.tui.widgets import AccountsPanel, fit_login, login_segment
 
 if TYPE_CHECKING:
     from claude_swap.tui.app import CswapApp
@@ -69,6 +71,8 @@ class AutoScreen(Screen):
         Binding("left", "threshold_step(-1)", "-1%"),
         Binding("right", "threshold_step(1)", "+1%"),
         Binding("enter", "adjust_done", "Done"),
+        Binding("d", "toggle_desktop_follows", "Desktop follows"),
+        Binding("o", "toggle_connectors_follow_pin", "Connectors follow pin"),
         Binding("escape,q", "back", "Back"),
     ]
 
@@ -108,6 +112,9 @@ class AutoScreen(Screen):
         # adjustment reverts, not this correction).
         self._configured_threshold = self._settings.threshold
         self.app.threshold_pct = self._settings.threshold
+        # The weekly line is not session-adjustable, so this is only the same
+        # sync-to-the-file correction; nothing to restore on unmount.
+        self.app.weekly_threshold_pct = self._settings.weekly_threshold
         self._update_summary()
         self.watch(self.app, "snapshot", self._on_snapshot)
         self.watch(self.app, "theme", self._on_theme_change)
@@ -163,6 +170,34 @@ class AutoScreen(Screen):
         value = min(spec.hi, max(spec.lo, self._settings.threshold + delta))
         self._set_threshold(value)
 
+    def action_toggle_desktop_follows(self) -> None:
+        self._toggle_pin_switch("desktop_follows", "pin.desktopFollows", "desktop follows")
+
+    def action_toggle_connectors_follow_pin(self) -> None:
+        self._toggle_pin_switch(
+            "connectors_follow_pin", "pin.connectorsFollowPin", "connectors follow pin"
+        )
+
+    def _toggle_pin_switch(self, field: str, key: str, label: str) -> None:
+        # Persisted, unlike `t`: the pin is another process and reads the saved setting.
+        # Flips the file's value now, not what this screen last saw.
+        from claude_swap.settings import load_pin_settings, set_setting
+
+        backup_dir = self.app.switcher.backup_dir
+        value = not getattr(load_pin_settings(backup_dir), field)
+        try:
+            set_setting(backup_dir, key, "true" if value else "false")
+        except Exception as exc:  # best-effort, like the theme; never crash the UI
+            self.notify(f"Could not save {label}: {exc}", severity="warning")
+            return
+        self._update_summary()
+        self.query_one("#event-log", RichLog).write(
+            Text(
+                f"{label} {'on' if value else 'off'}",
+                style=Palette.from_theme(self.app.current_theme).muted,
+            )
+        )
+
     def _end_adjust(self) -> None:
         self._adjusting = False
         self._update_summary()
@@ -188,6 +223,10 @@ class AutoScreen(Screen):
         self.app.threshold_pct = value
         self.query_one("#auto-active-panel", AccountsPanel).refresh()
         self._update_summary()
+        # The Next best list ranks by the lines in force, so it must follow
+        # the session value now rather than at the next snapshot: under a
+        # weekly line the order and the 5h rows' "(line N%)" both move.
+        self._on_snapshot(self.app.snapshot)
 
     def _update_summary(self) -> None:
         palette = Palette.from_theme(self.app.current_theme)
@@ -199,7 +238,16 @@ class AutoScreen(Screen):
         )
         if self._settings.threshold != self._configured_threshold:
             text.append(" (session)", style=palette.muted)
+        if self._settings.weekly_threshold is not None:
+            text.append(
+                f" · weekly {pct_label(self._settings.weekly_threshold)}%"
+            )
         text.append(f" · poll every {self._settings.interval_seconds:.0f}s")
+        from claude_swap.settings import load_pin_settings
+
+        follows = load_pin_settings(self.app.switcher.backup_dir)
+        text.append(f" · desktop follows {'on' if follows.desktop_follows else 'off'}")
+        text.append(f" · connectors follow pin {'on' if follows.connectors_follow_pin else 'off'}")
         if self._adjusting:
             text.append("   ← → adjust · enter done", style=palette.muted)
         self.query_one("#auto-summary", Static).update(text)
@@ -294,38 +342,101 @@ class AutoScreen(Screen):
     def _candidates_text(
         self, snap: AccountsSnapshot, active_number: str | None
     ) -> Text:
-        """Switch targets ranked by remaining headroom (best first)."""
-        # Same window set as the engine (autoswitch.model included), so the
-        # displayed ranking can never disagree with the account it picks.
+        """Switch targets ranked by headroom against their own switch lines
+        (best first) — the engine's own ordering."""
+        # Same window set AND the same lines as the engine: autoswitch.model,
+        # each account's own line (its policy threshold, else the session
+        # threshold — `_settings` is what `_set_threshold` replaces), the
+        # weekly line, and the session threshold as the ruler every account is
+        # scored on, so the displayed ranking can never disagree with the
+        # account it picks.
         palette = Palette.from_theme(self.app.current_theme)
-        models = parse_model_names(self._settings.model) if self._settings else ()
-        ranked: list[tuple[float, str]] = []  # (sort key: pct used, number)
-        lines: dict[str, Text] = {}
-        for acc in snap.accounts:
-            if acc.number == active_number or not acc.switchable:
-                continue
-            pct = binding_pct(acc.usage.last_good, models)
-            entry = Text()
-            entry.append(f"\n  {acc.number:>2}  ", style=palette.foreground)
-            entry.append(acc.email, style=palette.foreground)
+        settings = self._settings
+        models = parse_model_names(settings.model) if settings else ()
+        threshold = settings.threshold if settings else 90.0
+        weekly = settings.weekly_threshold if settings else None
+        candidates = [
+            acc for acc in snap.accounts
+            if acc.number != active_number and acc.switchable
+        ]
+        ranked: list[tuple[float, str]] = []  # (sort key: -policy headroom, number)
+        lines: dict[str, tuple[AccountSnapshot, Text, Text]] = {}  # (acc, name, the rest)
+        # The badge rides on that account's own row rather than the summary
+        # line: naming the pin separately makes you match an email against the
+        # list directly below it instead of just reading the list.
+        pinned_identity = pin.pinned_identity(self.app.switcher)
+        # ONCE PER RENDER, not once per row: this reads the daemon's record off
+        # disk, and the badge below is drawn inside the account loop. The same
+        # mistake was fixed for the pin lookup itself — see the test that pins
+        # its call count.
+        pin_applying = pin.pin_is_applying(self.app.switcher) if pinned_identity else None
+        for acc in candidates:
+            line = (
+                acc.policy.threshold if acc.policy.threshold is not None else threshold
+            )
+            binding = binding_window(
+                oauth.relevant_windows(acc.usage.last_good, models),
+                line,
+                weekly,
+                scale=threshold,
+            )
+            head, entry = Text(), Text()
+            head.append(f"\n  {acc.number:>2}  ", style=palette.foreground)
+            head.append(acc.email, style=palette.foreground)
             if acc.usage.sentinel is not None:
                 entry.append(
                     f"  {data.sentinel_label(acc.usage.sentinel)}", style=palette.muted
                 )
                 ranked.append((998.0, acc.number))
-            elif pct is None:
+            elif binding is None:
                 entry.append("  usage unknown", style=palette.muted)
                 ranked.append((999.0, acc.number))
             else:
-                entry.append(f"  {pct:3.0f}% used", style=palette.severity(pct))
-                ranked.append((pct, acc.number))
-            lines[acc.number] = entry
+                # The raw pct of the window that binds, and — only once the
+                # lines differ, globally or for this account — the line it is
+                # judged against.
+                entry.append(
+                    f"  {binding.label} {binding.pct:3.0f}% used",
+                    style=palette.severity(binding.pct),
+                )
+                if weekly is not None or acc.policy.threshold is not None:
+                    entry.append(
+                        f" (line {pct_label(binding.line)}%)", style=palette.muted
+                    )
+                ranked.append((-binding.line_headroom, acc.number))
+            # Outside the usage branches on purpose: an account whose usage is
+            # unknown still owns the claude.ai side, so the badge must not hang
+            # off whichever branch happened to run.
+            if pin.account_is_pinned(pinned_identity, acc.email, acc.org_uuid):
+                entry.append("  · ", style=palette.muted)
+                # SET IS NOT APPLYING. This badge used to be lit by
+                # the pin's presence alone, so it stayed green while the daemon
+                # could not mint the pinned token and every request went out
+                # unpinned, with the statusline and the coherence check
+                # agreeing with it. `False` is the
+                # only value worth shouting about; `None` means "could not
+                # tell" and must read as healthy here, same rule as
+                # `pin_is_broken`.
+                if pin_applying is False:
+                    entry.append("⚠ cloud UNPINNED", style=f"bold {palette.sev_crit}")
+                else:
+                    entry.append("○ cloud", style=f"bold {palette.sev_warn}")
+            lines[acc.number] = (acc, head, entry)
 
         text = Text()
         text.append("Next best", style=palette.muted)
         if not ranked:
             text.append("\n  no other switchable accounts", style=palette.muted)
             return text
-        for _pct, number in sorted(ranked):
-            text.append(lines[number])
+        order = [lines[number] for _pct, number in sorted(ranked)]
+        # The box has no width before its first layout; its CSS padding is 2 a side.
+        budget = self.query_one("#candidates", Static).size.width or self.app.size.width - 4
+        for row in fit_login(
+            lambda login: [
+                Text.assemble(head, tail, Text(login_segment(acc, login), style=palette.muted))
+                for acc, head, tail in order
+            ],
+            budget,
+        ):
+            text.append(row)
         return text
