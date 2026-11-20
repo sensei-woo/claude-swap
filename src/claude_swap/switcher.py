@@ -4291,6 +4291,26 @@ class ClaudeAccountSwitcher:
         except Exception:  # noqa: BLE001 — the add already succeeded
             self._logger.debug("post-add re-pin skipped", exc_info=True)
 
+    def _capture_is_side_profile(self) -> bool:
+        """Whether `cswap add` is reading a profile that is NOT the live default.
+
+        True when ``CLAUDE_CONFIG_DIR`` or a non-empty
+        ``CLAUDE_SECURESTORAGE_CONFIG_DIR`` names a directory other than the
+        default profile's. Such a capture (``CLAUDE_CONFIG_DIR=~/.cache/x claude
+        auth login`` then ``cswap add`` in the same environment) is a login the
+        machine is NOT running: the live credential, the live ``.claude.json``,
+        the cloud pin's wiring and ``activeAccountNumber`` all describe someone
+        else and must come out of the add untouched. Defined-but-empty
+        ``CLAUDE_SECURESTORAGE_CONFIG_DIR`` means the default store.
+        """
+        default = get_default_claude_config_home()
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        secure_dir = os.environ.get("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        for value in (config_dir, secure_dir):
+            if value and not _same_directory(Path(value), default):
+                return True
+        return False
+
     def _config_names_the_pin(self, email: str, org_uuid: str) -> bool:
         """Whether ``.claude.json``'s identity is a pin splice right now.
 
@@ -4413,6 +4433,15 @@ class ClaudeAccountSwitcher:
         # the pin overwrote. The server is asked for it first, below; a row
         # nobody can find is worse than a command that stops and says why.
         spliced = False
+        # A SIDE PROFILE HAS NO PIN SPLICE AND NO LIVE LOGIN TO AGREE WITH.
+        # The pin's wiring and splice live in the default profile's config; a
+        # login captured from another CLAUDE_CONFIG_DIR is read from its own
+        # untouched config, and the live login is somebody else's by design.
+        # Measured 2026-11-20 (Oracle): a side-profile `cswap add --slot 1`
+        # un-pinned the cloud account and made slot 1 "active" while the live
+        # login stayed slot 4. The oracle check on the credential itself
+        # (`_reject_foreign_credential_capture`) still runs below.
+        side_profile = self._capture_is_side_profile()
         # THE CONFIG CANNOT NAME A /login WHILE IT NAMES THE PIN. The splice
         # writes the pinned account there and the daemon's carry keeps it
         # there, so after a bare /login the file still says the pin and the
@@ -4424,7 +4453,8 @@ class ClaudeAccountSwitcher:
         # token against below. Measured 2026-09-02 on both Macs: a /login as
         # slot 2 under the pin, `cswap add` refused as "does not belong to
         # <pin>", and the login reached its slot only through a failover.
-        if self._config_names_the_pin(current_email, current_org_uuid):
+        if not side_profile and self._config_names_the_pin(
+                current_email, current_org_uuid):
             self._refuse_degraded_capture()
             resolved = self._login_identity_from_the_oracle()
             if resolved is None:
@@ -4441,7 +4471,7 @@ class ClaudeAccountSwitcher:
                 spliced = True
         # Resolved above, the triple IS the live login; the guard below then
         # compares it with itself and stays quiet, as it must.
-        live_login = (current_email, current_org_uuid) if spliced \
+        live_login = (current_email, current_org_uuid) if (spliced or side_profile) \
             else self._live_login_identity()
         if live_login is not None and live_login != (current_email, current_org_uuid):
             self._refuse_degraded_capture()
@@ -4529,7 +4559,8 @@ class ClaudeAccountSwitcher:
 
             seq["accounts"][account_num].pop(MODE_KEY, None)
 
-            seq["activeAccountNumber"] = int(account_num)
+            if not side_profile:
+                seq["activeAccountNumber"] = int(account_num)
             seq["lastUpdated"] = get_timestamp()
             self._write_json(self.sequence_file, seq)
 
@@ -4599,10 +4630,11 @@ class ClaudeAccountSwitcher:
         existing_alias = None
         if slot is not None:
             prior = data.get("accounts", {}).get(account_num) or {}
-            if (
-                prior.get("email") == current_email
-                and prior.get("organizationUuid", "") == current_org_uuid
-            ):
+            # THE SAME ADDRESS, not the same org: a setup token has no org and
+            # the full login that replaces it has one, so matching on the
+            # composite dropped the alias of exactly the upgrade this add is
+            # for (2026-11-20, slot 1 `main`).
+            if prior.get("email") == current_email:
                 existing_alias = prior.get("alias")
             if migrate_from:
                 existing_alias = data["accounts"][migrate_from].get("alias") or existing_alias
@@ -4669,7 +4701,15 @@ class ClaudeAccountSwitcher:
             # destroys. A migration is NOT this: the account survives at
             # another slot, and the pin is matched on the identity, not the
             # number, so it stays valid.
-            self._clear_pin_if_removed(d_email, d_org)
+            #
+            # NOT FROM A SIDE PROFILE: that capture never touches the live
+            # login or its pin, and an add of the SAME address (a setup token
+            # upgraded to a full login) removes no account at all.
+            if not side_profile:
+                self._clear_pin_if_removed(d_email, d_org)
+            else:
+                self._warn_pin_identity_changed(
+                    d_email, d_org, current_email, organization_uuid)
 
         if migrate_from:
             data = self._get_sequence_data()
@@ -4720,7 +4760,8 @@ class ClaudeAccountSwitcher:
         if int(account_num) not in data["sequence"]:
             data["sequence"].append(int(account_num))
             data["sequence"].sort()
-        data["activeAccountNumber"] = int(account_num)
+        if not side_profile:
+            data["activeAccountNumber"] = int(account_num)
         data["lastUpdated"] = get_timestamp()
 
         self._write_json(self.sequence_file, data)
@@ -4970,6 +5011,31 @@ class ClaudeAccountSwitcher:
             f"{muted('[personal]')} {muted(f'(from {source_label})')}"
         )
         self._repin_if_pin_slot_refreshed(account_num)
+
+    def _warn_pin_identity_changed(
+        self, old_email: str, old_org: str, new_email: str, new_org: str
+    ) -> None:
+        """Say so when a side-profile add changed the org of the PINNED slot.
+
+        The pin record is keyed on ``(email, organizationUuid)`` and is left
+        alone, so a setup token (no org) upgraded to a full login makes the
+        record name an identity no slot carries until the owner re-pins.
+        """
+        try:
+            from claude_swap import pin as _pin
+
+            pinned = _pin._pinned_email_now(self)
+            if not pinned or (pinned[0] or "") != old_email:
+                return
+            if (pinned[1] or "") != (old_org or "") or old_email != new_email:
+                return
+            if (new_org or "") != (old_org or ""):
+                warning(
+                    "Cloud pin: left as it was, but it names this account's "
+                    "old organization. Run `cswap pin <slot>` to re-apply it."
+                )
+        except Exception:  # noqa: BLE001 -- advice only
+            self._logger.debug("pin identity warning skipped", exc_info=True)
 
     def _clear_pin_if_removed(self, email: str, org_uuid: str) -> None:
         """Clear the cloud pin when the account it names is the one going away.
